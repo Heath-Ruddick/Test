@@ -1,0 +1,195 @@
+---
+title: "Project 2 - Gentrification"
+author: "Heather Ruddick"
+date: "December 8, 2017"
+output: html_document
+---
+
+```{r, echo=TRUE}
+getwd()
+setwd("C:/Users/Heather/Documents/Intro to Data Science")
+gentrification <- read.csv("gentrification_data.csv") #Loading the dataset into R
+#Starting to explore and learn more about the data and the shape of the variables
+head(gentrification)
+str(gentrification)
+summary(gentrification)
+#changing GEO.id to a factor variable
+gentrification$GEO.id <- factor(gentrification$GEO.id)
+str(gentrification)
+
+library(ggplot2)
+ggplot(data=gentrification)+
+  geom_point(mapping=aes(x=change_incm, y=GEO.id, color=p_chg_pvt)) #mapping changes in income wih respect to Geographic ID, colored by the percent change in people living below the poverty line
+
+ggplot(data=gentrification)+
+  geom_histogram(mapping = aes(x=change_incm)) #creating a histogram to view the distribution of income change
+
+
+```
+
+```{r, echo=TRUE}
+#Finding the median, max, and min income chnage so we can split the variable into a binary variable around the median
+median(gentrification$change_incm)
+max(gentrification$change_incm)
+min(gentrification$change_incm)
+#Changing income change into a binary variable with 2 factors: low income increase and high income increase
+gentrification$income_increase <- cut(gentrification$change_incm, c(-40000,10834,100000), labels=c("low","high"))
+head(gentrification)
+str(gentrification)
+gentrification$income_increase <- factor(gentrification$income_increase)
+
+```
+
+```{r, echo=TRUE}
+#Now that we've changed income into a binary variable, we can perform a logistic regression to see if we can predict whether a specific location over time has had high or low increased income
+
+#This is our first model with every variable included
+income.log.model <- glm(income_increase~p_chg_wh+p_chg_bk+p_chg_edc+change_hhsval+change_rent+p_chg_ownd+p_chg_rentd+p_chg_pvt+change_vcri+p_chg_chfm+chg_md_age, family = binomial(link="logit"), data = gentrification)
+summary(income.log.model)
+
+#Converting the log-odds coefficients into a more usable form
+exp(coef(income.log.model))
+
+#Using the Hosmer Lemeshow goodness of fit test to see if our model is useful
+library(ResourceSelection)
+hoslem.test(gentrification$income_increase, fitted(income.log.model))
+
+#Finding the probabilities for each response
+library(pROC)
+income.prob=predict(income.log.model, type = c("response"))
+income.prob
+
+#Calculating the hit-rate, finding our AUC value, and plotting our ROC curve
+income.hit <- roc(income_increase~income.prob, data=gentrification)
+income.hit
+plot(income.hit)
+
+#Caclulating the pseudo R to test model fitness
+library(pscl)
+pR2(income.log.model)
+```
+
+```{r, echo=TRUE}
+#Now that we've built a successful logistic regression model, we want to see if we can split up our data into testing and training to take it a step further. Our only concern is that our dataset is too small to get an accurate estimate
+
+#splitting into testing and training
+train.income <- gentrification[1:125,]
+test.income <- gentrification[126:179,]
+
+#Building our logistic model with our training dataset
+income.log.model2 <- glm(income_increase~p_chg_wh+p_chg_bk+p_chg_edc+change_hhsval+change_rent+p_chg_ownd+p_chg_rentd+p_chg_pvt+change_vcri+p_chg_chfm+chg_md_age, family = binomial(link="logit"), train.income)
+summary(income.log.model2)
+
+#Removing some of the non-significant predictors to simplify the model and reduce AIC
+income.log.model3 <- glm(income_increase~p_chg_wh+change_rent+p_chg_pvt, family = binomial(link="logit"), train.income)
+summary(income.log.model3)
+
+#Converting the log-odds coefficients into a more usable form
+income.output <- exp(coef(income.log.model3))
+income.output
+
+#Using the test dataset to see how accurately we can predict using our model
+pred.income <- predict.glm(income.log.model3,test.income,type='response')
+head(pred.income)
+contrasts(gentrification$income_increase)
+pred.income2 <- ifelse(pred.income > 0.5,1,0)
+
+head(pred.income2)
+income.pred.hit <- mean(pred.income2!=test.income$income_increase)
+income.pred.hit #it looks like our prediction rate is 100% which is concerning and leads us to think our dataset is too small
+
+library(dplyr)
+test.income %>% group_by(income_increase) %>%
+  summarise(no_rows = length(income_increase))
+
+head(test.income$income_increase)
+income.pred.hit2 <- mean(pred.income2!=as.numeric(test.income$income_increase))
+income.pred.hit2 #.944 is better, we'll continue to see how to model turns out
+```
+
+```{r,echo=TRUE}
+
+library(ROCR)
+#In order to use the package we first have to set the prediction 
+newpred.income <- prediction(pred.income,test.income$income_increase)
+#Next we want to measure true possitives which is "tpr" and also False Positives "fpr"
+newpred.income.performance <- performance(newpred.income, measure = "tpr",x.measure = "fpr")
+#then we plot these two measures
+plot(newpred.income.performance)
+#The curve looks like the model is a very poor predictor. We can calculate AUC as well
+AUC <- performance(newpred.income, measure = "auc")
+AUC
+#Only 0.09, not looking so great for our partitioned model
+```
+
+```{r,echo=TRUE}
+#We've seen that the dataset is too small to be split up in test vs train but our initial model was promising with a high AUC. So now, without partitioning the data we're going to find the best model using bestglm
+library(bestglm)
+#Develop models for logistic regression
+#Need to name the y variable in the data.frame
+head(gentrification)
+#we want default to be our 'y' variable, so we rename variable 
+colnames(gentrification) <- c('GEO.id', 'p_chg_wh', 'p_chg_bk', 'p_chg_edc', 'change_incm', 'change_hhsval', 'change_rent', 'p_chg_ownd', 'p_chg_rentd', 'p_chg_pvt', 'change_vcri', 'p_chg_chfm','ch_md_age','y')
+head(gentrification)
+#We also need to place the y variable in the last column as that is how the function is designed. We're also going to get rid of the original income_change so we're not including the same information in the model. We are also not including the geographic ID
+gentrification <- gentrification[, c('p_chg_wh', 'p_chg_bk', 'p_chg_edc', 'change_hhsval', 'change_rent', 'p_chg_ownd', 'p_chg_rentd', 'p_chg_pvt', 'change_vcri', 'p_chg_chfm','ch_md_age','y')]
+head(gentrification)
+
+income.bglm <- bestglm(Xy=gentrification,family = binomial,IC="AIC",method = "exhaustive")
+#The below will show us the difference in the different AIC levels of all the different model possibilities
+income.bglm$BestModels
+#You can also summarize the choosen best model, as seen below:
+summary(income.bglm$BestModel)
+
+exp(coef(income.bglm$BestModel))
+
+#Using the Hosmer Lemeshow goodness of fit test to see if our model is useful
+hoslem.test(gentrification$y, fitted(income.bglm$BestModel))
+
+#Finding the probabilities for each response
+library(pROC)
+income.prob.final=predict(income.bglm$BestModel, type = c("response"))
+income.prob.final
+
+#Calculating the hit-rate, finding our AUC value, and plotting our ROC curve
+income.hit.final <- roc(y~income.prob.final, data=gentrification)
+income.hit.final
+plot(income.hit.final)
+
+```
+
+```{r,echo=TRUE}
+#With the new information about the best glm, we're going to try one more time if we can partition the data successfully
+train.income.final <- gentrification[1:125,]
+test.income.final <- gentrification[126:179,]
+income.model.final <- glm(y~p_chg_wh+change_rent+p_chg_rentd+p_chg_pvt+p_chg_chfm, family = binomial(link="logit"), train.income.final)
+summary(income.model.final)
+
+income.output.final <- exp(coef(income.model.final))
+income.output.final
+
+pred.income.final <- predict.glm(income.model.final,test.income.final,type='response')
+head(pred.income.final)
+contrasts(gentrification$y)
+pred.income.final2 <- ifelse(pred.income > 0.5,1,0)
+
+
+head(pred.income.final2)
+income.pred.hit.final <- mean(pred.income.final2!=test.income.final$y)
+income.pred.hit.final
+
+library(dplyr)
+test.income.final %>% group_by(y) %>%
+  summarise(no_rows = length(y))
+
+head(test.income.final$y)
+income.pred.hit.final2 <- mean(pred.income.final2!=as.numeric(test.income.final$y))
+income.pred.hit.final2
+
+newpred.income.final <- prediction(pred.income.final,test.income.final$y)
+newpred.income.performance.final <- performance(newpred.income.final, measure = "tpr",x.measure = "fpr")
+plot(newpred.income.performance.final)
+AUC.final <- performance(newpred.income.final, measure = "auc")
+AUC #still only at 0.09, looks like we need a larger dataset
+
+```
